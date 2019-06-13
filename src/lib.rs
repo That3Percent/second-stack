@@ -1,3 +1,5 @@
+#![feature(allocator_api, alloc_layout_extra, trusted_len, ptr_offset_from)]
+
 use std::ops::{Deref, DerefMut};
 use std::{ptr, slice};
 use std::cell::RefCell;
@@ -288,7 +290,7 @@ pub fn acquire<I: Iterator + TrustedLen>(i: I) -> PoolPtr<I::Item> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::iter::*;
+	use testdrop::TestDrop;
 
 	#[test]
 	fn slices_do_no_alias() {
@@ -358,16 +360,17 @@ mod tests {
 
 	#[test]
 	fn drops() {
-		let (tracker, target) = DropTracker::new();
+		let td = TestDrop::new();
+		let (id, item) = td.new_item();
 		{
-			let some = Some(tracker);
+			let some = Some(item);
 			let _ = acquire(some.iter());
 			// Not dropped when moved into the slice
-			target.assert_alive();
+			td.assert_no_drop(id);
 		}
 
 		// Dropped with the slice
-		target.assert_dropped();
+		td.assert_drop(id);
 	}
 
 	#[test]
