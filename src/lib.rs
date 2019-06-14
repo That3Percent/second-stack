@@ -36,13 +36,13 @@ impl PoolAlloc {
 	}
 
 	/// Returns a smart pointer to a slice from this allocation, bumping up our stack pointer in the process.
-	pub fn slice<T>(&mut self, count: usize, pool_index: usize) -> PoolPtr<T> {
+	pub fn slice<T>(&mut self, count: usize, pool_index: usize) -> StackAlloc<T> {
 		debug_assert!(self.usable_size::<T>() >= count);
 		let layout = Layout::new::<T>().repeat(count).unwrap().0;
 		let restore = self.current;
 		let base = align::<T>(restore);
 		self.current = unsafe { base.add(layout.size()) };
-		PoolPtr {
+		StackAlloc {
 			len: count,
 			ptr: base as *mut T,
 			restore,
@@ -65,7 +65,7 @@ impl PoolAlloc {
 		}
 	}
 
-	/// Free an allocation from PoolPtr
+	/// Free an allocation from StackAlloc
 	pub fn release(&mut self, p: *mut u8) {
 		#[cfg(debug_assertions)]
 		debug_assert!(self.contains(p));
@@ -145,14 +145,14 @@ struct StackPool {
 }
 
 impl StackPool {
-	pub fn get_slice<T>(&mut self, count: usize, i: usize) -> PoolPtr<T> {
+	pub fn get_slice<T>(&mut self, count: usize, i: usize) -> StackAlloc<T> {
 		let result = self.pools[i].slice::<T>(count, i);
 		#[cfg(debug_assertions)]
 		self.history.push(result.restore);
 		result
 	}
 	/// Slice from the top pool, sizing up if necessary.
-	pub fn acquire<T>(&mut self, count: usize) -> PoolPtr<T> {
+	pub fn acquire<T>(&mut self, count: usize) -> StackAlloc<T> {
 		let pools = &mut self.pools;
 		let mut prev_used = 0;
 		let mut next_pool = 0;
@@ -179,7 +179,7 @@ impl StackPool {
 	}
 
 	/// Release a previously acquired pointer.
-	pub fn release<T>(&mut self, ptr: &PoolPtr<T>) {
+	pub fn release<T>(&mut self, ptr: &StackAlloc<T>) {
 		#[cfg(debug_assertions)]
 		debug_assert!(self.history.pop().unwrap() == ptr.restore);
 
@@ -215,7 +215,7 @@ thread_local!(
 
 /// A smart pointer that automatically releases the borrowed memory.
 #[derive(Debug)]
-pub struct PoolPtr<T> {
+pub struct StackAlloc<T> {
 	restore: *mut u8,
 	ptr: *mut T,
 	len: usize,
@@ -223,7 +223,7 @@ pub struct PoolPtr<T> {
 }
 
 
-impl<T> Deref for PoolPtr<T> {
+impl<T> Deref for StackAlloc<T> {
 	type Target = [T];
 
 	fn deref(&self) -> &[T] {
@@ -233,7 +233,7 @@ impl<T> Deref for PoolPtr<T> {
 	}
 }
 
-impl<T> DerefMut for PoolPtr<T> {
+impl<T> DerefMut for StackAlloc<T> {
 	fn deref_mut(&mut self) -> &mut [T] {
 		unsafe {
 			slice::from_raw_parts_mut(self.ptr, self.len)
@@ -241,7 +241,7 @@ impl<T> DerefMut for PoolPtr<T> {
 	}
 }
 
-impl<T> Drop for PoolPtr<T> {
+impl<T> Drop for StackAlloc<T> {
 	/// Release our slice from the PoolAlloc when no longer owned.
 	fn drop(&mut self) {
 		unsafe { ptr::drop_in_place(&mut self[..]); }
@@ -251,16 +251,12 @@ impl<T> Drop for PoolPtr<T> {
 	}
 }
 
-/// WARNING! The slice that PoolPtr<T> will deref to is logically uninitialized.
-/// The expectation is that writes will occur before reads. Reading first will lead to undefined behavior.
-///
-/// WARNING: Acquiring any type that implements Drop results in undefined behavior., since write would infer a drop as ownership
-/// of the value being overwritten is moved out of the slice.
-///
-/// PERFORMANCE: It is recommended that deref not be called in the hot loop, as the deref is unusually expensive.
-///
-/// TODO: Add !Drop to signature, but that doesn't seem to be implemented in the compiler yet...
-pub unsafe fn acquire_uninitialized<T>(count: usize) -> PoolPtr<T> {
+/// WARNING! The slice that StackAlloc<T> will deref to is logically uninitialized.
+/// This leads to all sorts of wildly unsafe things, including undefined behavior.
+/// Eg: Acquiring a type that implements drop may cause a write to the slice to drop invalid instances.
+// TODO: Add !Drop to signature, but that doesn't seem to be implemented in the compiler yet...
+#[cfg(feature = "experimental")]
+pub unsafe fn acquire_uninitialized<T>(count: usize) -> StackAlloc<T> {
 	THREAD_LOCAL_POOL.with(|rc| {
 		rc.borrow_mut().acquire(count)
 	})
@@ -268,7 +264,7 @@ pub unsafe fn acquire_uninitialized<T>(count: usize) -> PoolPtr<T> {
 
 // TODO: Relax the TrustedLen constraint, opting instead to allocate the larger bound,
 // and release any extra unused space after running the iterator.
-pub fn acquire<I: Iterator + TrustedLen>(i: I) -> PoolPtr<I::Item> {
+pub fn acquire<T, I: Iterator<Item=T> + TrustedLen>(i: I) -> StackAlloc<T> {
 	THREAD_LOCAL_POOL.with(|rc| {
 		let len = i.size_hint();
 		assert_eq!(Some(len.0), len.1); // Runtime check for ExactSizedIterator, since this isn't working for some obvious cases like repeat(v).take(5)
@@ -394,7 +390,7 @@ mod tests {
 			let x = acquire(0..10);
 			let y = acquire(0..10);
 
-			fn move_into(ptr: PoolPtr<u8>) {}
+			fn move_into(ptr: StackAlloc<u8>) {}
 			move_into(x);
 		});
 

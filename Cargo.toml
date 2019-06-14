@@ -1,5 +1,5 @@
 [package]
-name = "second_stack"
+name = "second-stack"
 version = "0.1.0"
 authors = ["Zac <that3percent@gmail.com>"]
 edition = "2018"
@@ -8,3 +8,6 @@ edition = "2018"
 
 [dev-dependencies]
 testdrop = "0.1.2"
+
+[features]
+experimental = []
