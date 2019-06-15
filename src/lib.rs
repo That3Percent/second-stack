@@ -255,7 +255,7 @@ impl<T> Drop for StackAlloc<T> {
 /// This leads to all sorts of wildly unsafe things, including undefined behavior.
 /// Eg: Acquiring a type that implements drop may cause a write to the slice to drop invalid instances.
 // TODO: Add !Drop to signature, but that doesn't seem to be implemented in the compiler yet...
-#[cfg(feature = "experimental")]
+#[cfg(any(test, feature = "experimental"))]
 pub unsafe fn acquire_uninitialized<T>(count: usize) -> StackAlloc<T> {
 	THREAD_LOCAL_POOL.with(|rc| {
 		rc.borrow_mut().acquire(count)
