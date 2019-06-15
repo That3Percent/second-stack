@@ -10,7 +10,7 @@ use std::iter::*;
 /// A chunk of memory that the StackPool will allocate from, as well as the pointer
 /// that indicates how much (if any) is used. The default value for this struct is
 /// unallocated, containing only null pointers.
-struct PoolAlloc {
+struct Heap {
 	bottom: *mut u8, // invariant
 	top: *mut u8,
 	current: *mut u8,
@@ -21,7 +21,7 @@ fn align<T>(value: *mut u8) -> *mut u8 {
 	unsafe { value.add(value.align_offset(align_of::<T>())) }
 }
 
-impl PoolAlloc {
+impl Heap {
 	/// How many of T can we hold right now?
 	/// This takes into account not just the size of T, but also the alignment of our current stack pointer.
 	pub fn usable_size<T>(&self) -> usize { // TODO: Cleanup, using signature fn can_accommodate(layout: Layout) -> bool
@@ -84,15 +84,15 @@ impl PoolAlloc {
 		unsafe { self.top.offset_from(self.bottom) as usize }
 	}
 
-	/// Creates a new PoolAlloc of a specific size.
-	pub fn new(size_in_bytes: usize) -> PoolAlloc {
+	/// Creates a new Heap of a specific size.
+	pub fn new(size_in_bytes: usize) -> Heap {
 		// TODO: Use error_chain instead of unwrap. https://docs.rs/error-chain/0.12.0/error_chain/
 		debug_assert!(size_in_bytes >= size_for_i(0));
 		let layout = Self::layout_u8(size_in_bytes);
 		debug_assert!(size_in_bytes == layout.size()); // Invariant, See also: c4e1285a-306a-450f-a027-13c0cd3d3d08
 		unsafe {
 			let bottom = Global.alloc(layout).unwrap().as_ptr(); // TODO: There may be mitigation, like not doubling in size.
-			PoolAlloc {
+			Heap {
 				bottom,
 				current: bottom,
 				top: bottom.add(layout.size()),
@@ -101,21 +101,21 @@ impl PoolAlloc {
 	}
 }
 
-impl Drop for PoolAlloc {
+impl Drop for Heap {
 	/// Free memory when the pool is unowned.
 	fn drop(&mut self) {
 		debug_assert!(self.bytes_used() == 0); // Do not free memory if still in-use. Not runtime check, because this should be statically impossible if this module is implemented correctly.
-		if let Some(bottom) = ptr::NonNull::new(self.bottom) { // May be null if the PoolAlloc was unused/unallocated.
+		if let Some(bottom) = ptr::NonNull::new(self.bottom) { // May be null if the Heap was unused/unallocated.
 			let layout = Self::layout_u8(self.bytes_total()); // See also: c4e1285a-306a-450f-a027-13c0cd3d3d08
 			unsafe { Global.dealloc(bottom, layout); }
 		}
 	}
 }
 
-impl Default for PoolAlloc {
-	/// The unallocated PoolAlloc
-	fn default() -> PoolAlloc {
-		PoolAlloc {
+impl Default for Heap {
+	/// The unallocated Heap
+	fn default() -> Heap {
+		Heap {
 			bottom: ptr::null_mut(),
 			top: ptr::null_mut(),
 			current: ptr::null_mut(),
@@ -130,14 +130,14 @@ const MIN_POW: usize = 16;
 const MAX_POW: usize = 32;
 const NUM_POOLS: usize = MAX_POW-MIN_POW; // Since pools at least double in size, there can never be more than this many pools or we would run out of memory for a single allocation.
 
-/// The size of the nth generation of the PoolAlloc
+/// The size of the nth generation of the Heap
 fn size_for_i(i: usize) -> usize {
 	1 << (i + MIN_POW)
 }
 
-/// Holds multiple generations of PoolAlloc. Resizes, slices, and frees.
+/// Holds multiple generations of Heap. Resizes, slices, and frees.
 struct StackPool {
-	pools: [PoolAlloc; NUM_POOLS],
+	pools: [Heap; NUM_POOLS],
 	top: Option<usize>, // Which pool is the top pool?
 
 	#[cfg(debug_assertions)]
@@ -170,7 +170,7 @@ impl StackPool {
 		for i in next_pool..NUM_POOLS {
 			let size = size_for_i(i);
 			if size_for_i(i) >= min_bytes {
-				pools[i] = PoolAlloc::new(size);
+				pools[i] = Heap::new(size);
 				self.top = Some(i);
 				return self.get_slice(count, i);
 			}
@@ -189,7 +189,7 @@ impl StackPool {
 		}
 	}
 
-	/// How many bytes are allocated by all PoolAlloc that are currently owned.
+	/// How many bytes are allocated by all Heap that are currently owned.
 	#[cfg(test)]
 	fn total_bytes_allocated(&self) -> usize {
 		if let Some(top) = self.top {
@@ -242,7 +242,7 @@ impl<T> DerefMut for StackAlloc<T> {
 }
 
 impl<T> Drop for StackAlloc<T> {
-	/// Release our slice from the PoolAlloc when no longer owned.
+	/// Release our slice from the Heap when no longer owned.
 	fn drop(&mut self) {
 		unsafe { ptr::drop_in_place(&mut self[..]); }
 		THREAD_LOCAL_POOL.with(|rc| {
