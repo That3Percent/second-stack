@@ -287,14 +287,12 @@ pub fn acquire<T, I: Iterator<Item=T> + TrustedLen>(i: I) -> StackAlloc<T> {
 mod tests {
 	use super::*;
 	use testdrop::TestDrop;
+	use std::iter::repeat;
 
 	#[test]
 	fn slices_do_no_alias() {
-		let mut pool0 = unsafe { acquire_uninitialized::<u32>(10) };
-		let mut pool1 = unsafe { acquire_uninitialized::<u32>(10) };
-
-		for p in pool0.iter_mut() { *p = 0; }
-		for p in pool1.iter_mut() { *p = 1; }
+		let pool0 = acquire(repeat(0).take(10));
+		let pool1 = acquire(repeat(1).take(10));
 
 		assert!(pool0.iter().all(|p| *p == 0));
 		assert!(pool1.iter().all(|p| *p == 1));
@@ -302,8 +300,14 @@ mod tests {
 
 
 	#[test]
-	fn result_is_correctly_sized() {
+	fn uninitialized_is_correctly_sized() {
 		let pool = unsafe { acquire_uninitialized::<u32>(10) };
+		assert_eq!(pool.len(), 10);
+	}
+
+	#[test]
+	fn is_correctly_sized() {
+		let pool = acquire(0..10u8);
 		assert_eq!(pool.len(), 10);
 	}
 
