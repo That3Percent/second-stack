@@ -1,4 +1,4 @@
-#![feature(allocator_api, alloc_layout_extra, trusted_len, ptr_offset_from)]
+#![feature(allocator_api, alloc_layout_extra, ptr_offset_from)]
 
 use std::ops::{Deref, DerefMut};
 use std::{ptr, slice};
@@ -262,23 +262,28 @@ pub unsafe fn acquire_uninitialized<T>(count: usize) -> StackAlloc<T> {
 	})
 }
 
-// TODO: Relax the TrustedLen constraint, opting instead to allocate the larger bound,
-// and release any extra unused space after running the iterator.
-pub fn acquire<T, I: Iterator<Item=T> + TrustedLen>(i: I) -> StackAlloc<T> {
+/// ## Panics
+/// * Must panic if the iterator is unbounded in length, or if the size of the allocation is too large.
+pub fn acquire<T, I: Iterator<Item=T>>(items: I) -> StackAlloc<T> {
 	THREAD_LOCAL_POOL.with(|rc| {
-		let len = i.size_hint();
-		assert_eq!(Some(len.0), len.1); // Runtime check for ExactSizedIterator, since this isn't working for some obvious cases like repeat(v).take(5)
-		let pool = rc.borrow_mut().acquire(len.0);
+		let len = items.size_hint().1.expect("Expected an iterator with an upper bound.");
+		// TODO: Check if the size of the allocation would exceed isize.max bytes
+		let mut pool = rc.borrow_mut().acquire(len);
 		let mut p = pool.ptr;
-		// TODO: To adhere to the standards of the nomicon, this needs to handle drop correctly in
-		// the face of a panic. Probably the thing to do is to have acquire just return a pointer tuple, and then
-		// wrap it up in the drop structure at the end.
-		for item in i {
+
+		// TODO: Decide whether to canonize behavior for a size hint that is too large. (This is probably necessary given that an initializer could allocate.)
+		// TODO: Write test for panic in iterator.
+		pool.len = 0;
+		for item in items.take(len) { // Taking only len here ensures that we don't need to trust size-hint.
 			unsafe {
 				ptr::write(p, item);
 				p = p.add(1);
 			}
+			pool.len += 1; // By modifying the len after writing an item we ensure that uninitialized memory is not dropped.
 		}
+		// TODO: In the event that an enumerator produces fewer items than the upper bound of the size hint, we should free some
+		// memory if possible. Consider though it is possible (if unlikely) that the iterator producing items used allocations
+		// from our heap of it's own, so it's not as simple as just moving the pointer down.
 		pool
 	})
 }
@@ -374,6 +379,32 @@ mod tests {
 	}
 
 	#[test]
+	fn shrinks_on_large_size_hint() {
+		struct UndersizedIterator {
+			remaining: usize
+		}
+		impl Iterator for UndersizedIterator {
+			type Item = usize;
+			fn next(&mut self) -> Option<Self::Item> {
+				if self.remaining == 0 {
+					None
+				} else {
+					self.remaining -= 1;
+					Some(self.remaining)
+				}
+			}
+			// This is clearly wrong on both the upper and lower bound.
+			fn size_hint(&self) -> (usize, Option<usize>) {
+				(self.remaining + 20, Some(self.remaining + 20))
+			}
+		}
+
+		let bad = UndersizedIterator { remaining: 5 };
+		let values = acquire(bad);
+		assert!(values.len() == 5);
+	}
+
+	#[test]
 	fn empty_slice_ok() {
 		acquire(repeat(0).take(0));
 		acquire(repeat(0).take(0));
@@ -385,6 +416,7 @@ mod tests {
 		debug_assert!(data.len() == 10);
 		debug_assert!(data[0] == ());
 	}
+
 
 	/*
 	// This doesn't quite work, since it ends up panicking again while unwinding.
