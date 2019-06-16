@@ -1,6 +1,6 @@
 [package]
 name = "second-stack"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Zac <that3percent@gmail.com>"]
 edition = "2018"
 description = "A fast slice allocator for short-lived allocations that do not escape the thread."
