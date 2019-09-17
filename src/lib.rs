@@ -16,26 +16,36 @@ struct Heap {
     current: *mut u8,
 }
 
+
+/// At some point, it was decided that offset_from should always return the invalid value in MIRI. Sidestep that.
+/// https://github.com/rust-lang/rust/issues/62420
+fn guaranteed_align_offset<T>(from: *mut u8) -> usize {
+	let n = from as usize;
+	((n + align_of::<T>() - 1) & !(align_of::<T>() - 1)) - n
+}
+
 /// Bumps a pointer up to the nearest aligned address
 fn align<T>(value: *mut u8) -> *mut u8 {
-    unsafe { value.add(value.align_offset(align_of::<T>())) }
+	let n = value as usize;
+	((n + align_of::<T>() - 1) & !(align_of::<T>() - 1)) as *mut u8
 }
 
 impl Heap {
     /// How many of T can we hold right now?
     /// This takes into account not just the size of T, but also the alignment of our current stack pointer.
     pub fn usable_size<T>(&self) -> usize {
-        // TODO: Cleanup, using signature fn can_accommodate(layout: Layout) -> bool
-        let aligned = align::<T>(self.current);
-        let bytes_remaining = unsafe { self.top.offset_from(aligned) };
-        if bytes_remaining < 0 {
-            0
-        } else {
-            match size_of::<T>() {
-                0 => std::isize::MAX as usize,
-                _ => bytes_remaining as usize / size_of::<T>(),
-            }
-        }
+		match size_of::<T>() {
+			0 => std::isize::MAX as usize,
+			_ => {
+				let lost_to_alignment = guaranteed_align_offset::<T>(self.current) as isize;
+        		let bytes_remaining = unsafe { self.top.offset_from(self.current) } - lost_to_alignment;
+				if bytes_remaining <= 0 {
+					0
+				} else {
+					bytes_remaining as usize / size_of::<T>()
+				}
+			}
+		}
     }
 
     /// Returns a smart pointer to a slice from this allocation, bumping up our stack pointer in the process.
@@ -272,6 +282,7 @@ pub fn acquire<T, I: Iterator<Item = T>>(items: I) -> StackAlloc<T> {
         // TODO: Check if the size of the allocation would exceed isize.max bytes
         let mut pool = rc.borrow_mut().acquire(len);
         let mut p = pool.ptr;
+		debug_assert!(((p as usize) % align_of::<T>()) == 0); // Verify alignment
 
         // TODO: Decide whether to canonize behavior for a size hint that is too large. (This is probably necessary given that an initializer could allocate.)
         // TODO: Write test for panic in iterator.
