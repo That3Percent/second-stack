@@ -11,6 +11,10 @@ keywords = ["slice", "stack", "memory-management"]
 categories = ["memory-management"]
 license = "MIT"
 
+[[bench]]
+name = "vs_vec"
+harness = false
+
 [badges]
 maintenance = { status = "actively-developed" }
 
@@ -18,6 +22,8 @@ maintenance = { status = "actively-developed" }
 testdrop = "0.1.2"
 rand = "0.7.1"
 rand_pcg = "0.2.0"
+criterion = "0.3"
+
 
 [features]
 experimental = []
