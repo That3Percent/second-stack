@@ -119,8 +119,8 @@ impl Heap {
 impl Drop for Heap {
     /// Free memory when the pool is unowned.
     fn drop(&mut self) {
-        debug_assert!(self.bytes_used() == 0); // Do not free memory if still in-use. Not runtime check, because this should be statically impossible if this module is implemented correctly.
         if let Some(bottom) = ptr::NonNull::new(self.bottom) {
+        	debug_assert!(self.bytes_used() == 0, "bytes used {} > 0", self.bytes_used()); // Do not free memory if still in-use. Not runtime check, because this should be statically impossible if this module is implemented correctly.
             // May be null if the Heap was unused/unallocated.
             let layout = Self::layout_u8(self.bytes_total()); // See also: c4e1285a-306a-450f-a027-13c0cd3d3d08
             unsafe {
