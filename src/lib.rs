@@ -200,9 +200,10 @@ impl StackPool {
         #[cfg(debug_assertions)]
         debug_assert!(self.history.pop().unwrap() == ptr.restore);
 
-        self.pools[ptr.pool_alloc].release(ptr.restore);
-        if self.top.unwrap() != ptr.pool_alloc {
-            self.pools[ptr.pool_alloc] = Default::default();
+        let pool = &mut self.pools[ptr.pool_alloc];
+		pool.release(ptr.restore);
+		if (ptr.restore == pool.bottom) && (self.top.unwrap() != ptr.pool_alloc) {
+			*pool = Default::default();
         }
     }
 
