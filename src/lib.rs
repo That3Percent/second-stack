@@ -101,7 +101,6 @@ impl Heap {
 
     /// Creates a new Heap of a specific size.
     pub fn new(size_in_bytes: usize) -> Heap {
-        // TODO: Use error_chain instead of unwrap. https://docs.rs/error-chain/0.12.0/error_chain/
         debug_assert!(size_in_bytes >= size_for_i(0));
         let layout = Self::layout_u8(size_in_bytes);
         debug_assert!(size_in_bytes == layout.size()); // Invariant, See also: c4e1285a-306a-450f-a027-13c0cd3d3d08
@@ -257,6 +256,7 @@ impl<T> Drop for StackAlloc<T> {
         unsafe {
             ptr::drop_in_place(&mut self[..]);
         }
+		// TODO: Ensure this is freed even if the previous drop panics
         THREAD_LOCAL_POOL.with(|rc| {
             rc.borrow_mut().release(&self);
         })
