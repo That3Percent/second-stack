@@ -16,6 +16,8 @@ maintenance = { status = "actively-developed" }
 
 [dev-dependencies]
 testdrop = "0.1.2"
+rand = "0.7.1"
+rand_pcg = "0.2.0"
 
 [features]
 experimental = []

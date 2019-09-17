@@ -308,6 +308,7 @@ mod tests {
     use super::*;
     use std::iter::repeat;
     use testdrop::TestDrop;
+	use rand::prelude::*;
 
     #[test]
     fn slices_do_no_alias() {
@@ -431,6 +432,74 @@ mod tests {
         debug_assert!(data[0] == ());
     }
 
+	// See also b574ca3e-d5e7-4691-bf1e-50f572a9a687
+	#[derive(Default, Clone)]
+	struct _64 { a: u64 }
+	#[derive(Default, Clone)]
+	struct _32 { a: u32 }
+	#[derive(Default, Clone)]
+	struct _16 { a: u16 }
+	#[derive(Default, Clone)]
+	struct _8 { a: u8 }
+	#[derive(Default, Clone)]
+	struct _64_32 { a: u64, b: u32 }
+	#[derive(Default, Clone)]
+	struct _64_16 { a: u64, b: u16 }
+	#[derive(Default, Clone)]
+	struct _64_8 { a: u64, b: u8 }
+
+	trait Alloc {
+		fn alloc<T: 'static>(&self, 
+		i: impl Iterator<Item=T>) -> Box<dyn Drop>;
+	}
+
+	fn soak(allocator: impl Alloc, rng: &mut impl Rng) {
+		fn recurse(i: usize, alloc: &impl Alloc, rng: &mut impl Rng) {
+			if i < 2 { return; }
+			let top = rng.gen_range(0, i);
+			let bottom = i - top;
+
+			recurse(top, alloc, rng);
+
+			let size = rng.gen_range(1, i) * rng.gen_range(1, 100);
+			let mode = rng.gen_range(0u8, 7u8);
+			let dropper = match mode {
+				0 => { alloc.alloc(repeat(_64::default()).take(size)) },
+				1 => { alloc.alloc(repeat(_32::default()).take(size)) },
+				2 => { alloc.alloc(repeat(_16::default()).take(size)) },
+				3 => { alloc.alloc(repeat(_64_8::default()).take(size)) },
+				4 => { alloc.alloc(repeat(_64_32::default()).take(size)) },
+				5 => { alloc.alloc(repeat(_64_16::default()).take(size)) },
+				6 => { alloc.alloc(repeat(_8::default()).take(size)) },
+				_ => unreachable!(),
+			};
+
+			recurse(bottom, alloc, rng);
+
+			drop(dropper);
+		}
+
+		for i in (0..5000).step_by(150) {
+			recurse(i, &allocator, rng);
+		}
+	}
+
+	pub fn soak_acquire(rng: &mut impl Rng) {
+		struct Acquire;
+		impl Alloc for Acquire {
+			fn alloc<T: 'static>(&self, i: impl Iterator<Item=T>) -> Box<dyn Drop> {
+				Box::new(acquire(i))
+			}
+		}
+		soak(Acquire, rng);
+	}
+
+
+	#[test]
+	fn soak_test() {
+		soak_acquire(&mut rand::thread_rng())
+	}
+
     /*
     // This doesn't quite work, since it ends up panicking again while unwinding.
     #[test]
@@ -446,5 +515,4 @@ mod tests {
         assert!(result.is_err());
     }
     */
-
 }
