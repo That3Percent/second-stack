@@ -1,6 +1,6 @@
 [package]
 name = "second-stack"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Zac <that3percent@gmail.com>"]
 edition = "2018"
 description = "A fast slice allocator for short-lived allocations that do not escape the thread."
@@ -11,11 +11,19 @@ keywords = ["slice", "stack", "memory-management"]
 categories = ["memory-management"]
 license = "MIT"
 
+[[bench]]
+name = "vs_vec"
+harness = false
+
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dev-dependencies]
 testdrop = "0.1.2"
+rand = "0.7.1"
+rand_pcg = "0.2.0"
+criterion = "0.3"
+
 
 [features]
 experimental = []
