@@ -1,29 +1,21 @@
 [package]
 name = "second-stack"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Zac <that3percent@gmail.com>"]
-edition = "2018"
-description = "A fast slice allocator for short-lived allocations that do not escape the thread."
-homepage = "http://www.that3percent.com/second-stack"
+edition = "2021"
+description = "A fast slice allocator for short-lived allocations."
+homepage = "https://github.com/That3Percent/second-stack"
+docs = "https://docs.rs/second-stack/0.2.1/second_stack/"
 repository = "https://github.com/That3Percent/second-stack"
 readme = "README.md"
 keywords = ["slice", "stack", "memory-management"]
 categories = ["memory-management"]
 license = "MIT"
 
-[[bench]]
-name = "vs_vec"
-harness = false
-
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dev-dependencies]
-testdrop = "0.1.2"
-rand = "0.7.1"
-rand_pcg = "0.2.0"
-criterion = "0.3"
 
 
 [features]
-experimental = []
