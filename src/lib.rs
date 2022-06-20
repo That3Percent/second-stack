@@ -2,6 +2,7 @@ mod stack;
 use stack::Stack;
 use std::cell::UnsafeCell;
 
+use std::ops::{Deref, DerefMut};
 use std::{self, mem::MaybeUninit};
 use std::{
     mem::{align_of, replace, size_of},
@@ -9,10 +10,29 @@ use std::{
 };
 
 thread_local!(
-    static THREAD_LOCAL_POOL: UnsafeCell<Stack> = UnsafeCell::new(
+    static THREAD_LOCAL_POOL: Dropper = Dropper(UnsafeCell::new(
         Stack::null()
-    )
+    ))
 );
+
+struct Dropper(UnsafeCell<Stack>);
+impl Drop for Dropper {
+    fn drop(&mut self) {
+        let stack = self.get_mut();
+        stack.force_dealloc();
+    }
+}
+impl Deref for Dropper {
+    type Target = UnsafeCell<Stack>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for Dropper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 // Copied from the nightly feature MaybeUninit::assume_init
 const fn uninit_array<const N: usize, T>() -> [MaybeUninit<T>; N] {

@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::thread;
 use std::{mem, ptr};
 
 #[derive(Clone)]
@@ -27,16 +25,31 @@ impl Stack {
         mem::forget(v);
 
         #[cfg(test)]
-        println!(
-            "second-stack allocated {size_in_bytes} bytes at {base:?} on thread {:?}",
-            thread::current().id()
-        );
+        println!("second-stack allocated {size_in_bytes} bytes at {base:?}");
 
         Self {
             base,
             len: 0,
             capacity: size_in_bytes,
         }
+    }
+
+    pub fn force_dealloc(&mut self) {
+        if self.base == ptr::null_mut() {
+            return;
+        }
+
+        unsafe {
+            #[cfg(test)]
+            println!(
+                "second-stack deallocated {} bytes at {:?}",
+                self.capacity, self.base,
+            );
+            // Drops the memory
+            drop(Vec::from_raw_parts(self.base, 0, self.capacity));
+        }
+
+        self.base = ptr::null_mut();
     }
 
     pub fn try_dealloc(&mut self) {
@@ -48,24 +61,7 @@ impl Stack {
         if self.len != 0 {
             return;
         }
-        // Right now this should be unnecessary protection. But, this
-        // code is infrequently called.
-        if self.base == ptr::null_mut() {
-            return;
-        }
 
-        unsafe {
-            #[cfg(test)]
-            println!(
-                "second-stack deallocated {} bytes at {:?} on thread {:?}",
-                self.capacity,
-                self.base,
-                thread::current().id()
-            );
-            // Drops the memory
-            drop(Vec::from_raw_parts(self.base, 0, self.capacity));
-        }
-
-        self.base = ptr::null_mut();
+        self.force_dealloc();
     }
 }
