@@ -15,7 +15,8 @@ license = "MIT"
 [badges]
 maintenance = { status = "actively-developed" }
 
-[dev-dependencies]
-
 
 [features]
+
+[dev-dependencies]
+rand = "0.8.5"
