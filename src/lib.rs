@@ -3,7 +3,10 @@ use stack::Stack;
 use std::cell::UnsafeCell;
 
 use std::{self, mem::MaybeUninit};
-use std::{mem, slice};
+use std::{
+    mem::{align_of, replace, size_of},
+    slice,
+};
 
 thread_local!(
     static THREAD_LOCAL_POOL: UnsafeCell<Stack> = UnsafeCell::new(
@@ -11,64 +14,37 @@ thread_local!(
     )
 );
 
-/// WARNING: This is currently only implemented for types with a layout equal to T: u8.
-/// Any other type will panic.
+// Copied from the nightly feature MaybeUninit::assume_init
+const fn uninit_array<const N: usize, T>() -> [MaybeUninit<T>; N] {
+    // SAFETY: An uninitialized `[MaybeUninit<_>; LEN]` is valid.
+    unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() }
+}
+
+/// Allocates an uninit slice from the threadlocal stack, resizing if necessary.
 pub fn uninit_slice<T, F, R>(len: usize, f: F) -> R
 where
     F: FnOnce(&mut [MaybeUninit<T>]) -> R,
 {
-    // Layout currently not implemented for anything that is not like u8
-    assert!(mem::size_of::<T>() == 1 && mem::align_of::<T>() == 1);
-
     // Special case for ZST that disregards the rest of the code,
     // so that none of that code need account for ZSTs.
+    // The reason this is convenient is that a ZST may use
+    // the stack without bumping the pointer, which will
+    // lead other code to free that memory while still in-use.
+    // See also: 2ec61cda-e074-4b26-a9a5-a01b70706585
+    // There may be other issues also.
     if std::mem::size_of::<T>() == 0 {
-        let mut zst_buf = Vec::with_capacity(len);
-        for _ in 0..len {
-            zst_buf.push(MaybeUninit::uninit());
-        }
-        return f(&mut zst_buf);
+        let mut tmp = Vec::<MaybeUninit<T>>::with_capacity(len);
+        let tmp = tmp.as_mut_ptr();
+        let mut slice = unsafe { slice::from_raw_parts_mut(tmp, len) };
+        return f(&mut slice);
     }
 
     // Optimization for small slices. This is currently required for correctness
-    // See also 26936c11-5b7c-472e-8f63-7922e63a5425
+    // See also: 26936c11-5b7c-472e-8f63-7922e63a5425
     // TODO: It would be nice to also check that T is small, but since this
     // is required for correctness we cannot presently do that.
     if len <= 32 {
-        let mut slice = [
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-            MaybeUninit::uninit(),
-        ];
+        let mut slice: [MaybeUninit<T>; 32] = uninit_array();
         return f(&mut slice[..len]);
     }
 
@@ -77,21 +53,31 @@ where
     let (restore, ptr) = THREAD_LOCAL_POOL.with(|cell| unsafe {
         let mut stack = &mut *cell.get();
         let remaining_bytes = stack.capacity - stack.len;
-        if remaining_bytes < len {
+        // Requires at a minimum size * len, but at a maximum must also pay
+        // an alignment cost.
+        let required_bytes_pessimistic = (align_of::<T>() - 1) + (size_of::<T>() * len);
+        if remaining_bytes < required_bytes_pessimistic {
+            // Require at least 64 bytes for the smallest allocation,
+            // and require we at least double in size from the previous
+            // allocated stack
             let mut capacity = 64.max(stack.capacity * 2);
-            while capacity < len {
+            // Require that we are a power of 2 and can fit
+            // the desired slice.
+            while capacity < required_bytes_pessimistic {
                 capacity *= 2;
             }
-            let mut dealloc = mem::replace(stack, Stack::new(capacity));
-            // This line is needed just in case the previous
-            // stack was not currently borrowed.
+            let mut dealloc = replace(stack, Stack::new(capacity));
+            // If the previous stack was not borrowed, we need to
+            // free it.
             dealloc.try_dealloc();
         }
 
         let restore = stack.clone();
 
-        let ptr = stack.base.offset(stack.len as isize);
-        stack.len += len;
+        let base = stack.base.offset(stack.len as isize);
+        let align = base.align_offset(align_of::<T>());
+        let ptr = base.offset(align as isize);
+        stack.len += align + (size_of::<T>() * len);
 
         (restore, ptr)
     });
@@ -132,55 +118,3 @@ where
     todo!()
 }
 */
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn default_checks<F>(len: usize, f: F)
-    where
-        F: FnOnce(),
-    {
-        uninit_u8_slice(len, |uninit| {
-            assert_eq!(len, uninit.len());
-            for i in 0..uninit.len() {
-                uninit[i] = MaybeUninit::new((i % 256) as u8);
-            }
-            f();
-            let init = unsafe { &*(uninit as *const [MaybeUninit<u8>] as *const [u8]) };
-            // Verify that nothing overwrote this array.
-            for i in 0..init.len() {
-                assert_eq!(init[i], (i % 256) as u8);
-            }
-        })
-    }
-
-    fn uninit_u8_slice<F>(len: usize, f: F)
-    where
-        F: FnOnce(&mut [MaybeUninit<u8>]),
-    {
-        uninit_slice::<u8, _, _>(len, f)
-    }
-
-    #[test]
-    fn alloc_is_correct_len() {
-        for _ in 0..2 {
-            for len in [0, 2, 10, 15, 32, 33, 60, 65, 100, 200] {
-                default_checks(len, || ());
-            }
-        }
-    }
-
-    #[test]
-    fn recursive_alloc() {
-        for _ in 0..2 {
-            default_checks(256, || {
-                default_checks(1024, || {
-                    default_checks(15, || {
-                        default_checks(64, || default_checks(1024, || default_checks(999, || ())))
-                    })
-                })
-            });
-        }
-    }
-}

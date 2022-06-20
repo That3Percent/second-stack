@@ -43,7 +43,8 @@ impl Stack {
         // Don't dealloc if the slice is in-use.
         // We assume at this point that there are no slices with len
         // 0 in-use, because we don't use the Stack type for those.
-        // See also 26936c11-5b7c-472e-8f63-7922e63a5425
+        // See also: 26936c11-5b7c-472e-8f63-7922e63a5425
+        // See also: 2ec61cda-e074-4b26-a9a5-a01b70706585
         if self.len != 0 {
             return;
         }
