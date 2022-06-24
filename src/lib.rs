@@ -1,5 +1,5 @@
-mod stack;
-use stack::Stack;
+mod allocation;
+use allocation::Allocation;
 
 use std::{
     self,
@@ -11,11 +11,11 @@ use std::{
 
 thread_local!(
     static THREAD_LOCAL: Dropper = Dropper(UnsafeCell::new(
-        Stack::null()
+        Allocation::null()
     ))
 );
 
-struct Dropper(UnsafeCell<Stack>);
+struct Dropper(UnsafeCell<Allocation>);
 impl Drop for Dropper {
     fn drop(&mut self) {
         let stack = self.get_mut();
@@ -24,7 +24,7 @@ impl Drop for Dropper {
 }
 
 impl Deref for Dropper {
-    type Target = UnsafeCell<Stack>;
+    type Target = UnsafeCell<Allocation>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -186,9 +186,9 @@ where
     }
 }
 
-// The logic to drop our Stack goes into a drop impl so that if there
+// The logic to drop our Allocation goes into a drop impl so that if there
 // is a panic the drop logic is still run and we don't leak any memory.
-pub(crate) struct DropStack(Stack);
+pub(crate) struct DropStack(Allocation);
 impl Drop for DropStack {
     fn drop(&mut self) {
         unsafe {

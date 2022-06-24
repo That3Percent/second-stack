@@ -6,13 +6,13 @@ use std::{
 use crate::DropStack;
 
 #[derive(Clone)]
-pub(crate) struct Stack {
+pub(crate) struct Allocation {
     pub base: *mut u8,
     pub len: usize,
     pub capacity: usize,
 }
 
-impl Stack {
+impl Allocation {
     pub fn get_slice<T>(&mut self, len: usize) -> (DropStack, &mut [MaybeUninit<T>]) {
         unsafe {
             // Requires at a minimum size * len, but at a maximum must also pay
@@ -43,7 +43,7 @@ impl Stack {
             while new_capacity < capacity {
                 new_capacity *= 2;
             }
-            let mut dealloc = replace(self, Stack::new(new_capacity));
+            let mut dealloc = replace(self, Allocation::new(new_capacity));
             // If the previous stack was not borrowed, we need to
             // free it.
             dealloc.try_dealloc();
@@ -96,7 +96,7 @@ impl Stack {
     pub fn try_dealloc(&mut self) {
         // Don't dealloc if the slice is in-use.
         // We assume at this point that there are no slices with len
-        // 0 in-use, because we don't use the Stack type for those.
+        // 0 in-use, because we don't use the Allocation type for those.
         // See also: 26936c11-5b7c-472e-8f63-7922e63a5425
         // See also: 2ec61cda-e074-4b26-a9a5-a01b70706585
         if self.len != 0 {
