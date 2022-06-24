@@ -11,19 +11,22 @@ use testdrop::TestDrop;
 /// Includes tricky cases like recursing during iteration and drop
 #[test]
 fn soak() {
-    let mut handles = Vec::new();
+    let mut handles = Vec::with_capacity(128);
 
-    for _ in 0..60 {
-        let handle = thread::spawn(|| {
-            for _ in 0..5 {
-                recurse(8);
-            }
-        });
-        handles.push(handle);
-    }
+    for it in 0..10 {
+        for _ in 0..64 {
+            let handle = thread::spawn(|| {
+                let local = Stack::new();
+                for _ in 0..5 {
+                    recurse(8, &local);
+                }
+            });
+            handles.push(handle);
+        }
 
-    for handle in handles {
-        handle.join().unwrap();
+        for handle in handles.drain(..) {
+            handle.join().unwrap();
+        }
     }
 }
 
@@ -38,17 +41,17 @@ fn get_seed() -> <StdRng as SeedableRng>::Seed {
 /// Grabs a randomly sized slice, verifies it's len, writes
 /// random values to it, calls external function,
 /// and verifies that all of the writes remained intact.
-fn check_slice<T>(limit: u32)
+fn check_slice<T>(limit: u32, local: &Stack)
 where
     T: PartialEq + Debug,
     Standard: Distribution<T>,
 {
     let len = thread_rng().gen_range(0usize..1025);
 
-    let mut entered = false;
+    let mut call_check = CallCheck::new();
 
-    uninit_slice(len, |uninit| {
-        entered = true;
+    let f = move |uninit: &mut [MaybeUninit<T>]| {
+        call_check.ok();
         let seed = get_seed();
         let mut rng = StdRng::from_seed(seed);
 
@@ -57,7 +60,7 @@ where
             let value = rng.gen();
             uninit[i] = MaybeUninit::new(value);
         }
-        recurse(limit);
+        recurse(limit, local);
         let init = unsafe { &*(uninit as *const [MaybeUninit<T>] as *const [T]) };
         // Verify that nothing overwrote this array.
         let mut rng = StdRng::from_seed(seed);
@@ -65,60 +68,66 @@ where
             let value = rng.gen();
             assert_eq!(init[i], value);
         }
-    });
-    assert!(entered);
+    };
+
+    if rand_bool() {
+        uninit_slice(len, f);
+    } else {
+        local.uninit_slice(len, f)
+    }
 }
 
 fn rand_bool() -> bool {
     thread_rng().gen()
 }
 
-fn check_rand_method<T>(limit: u32)
+fn check_rand_method<T>(limit: u32, local: &Stack)
 where
     T: Debug + PartialEq,
     Standard: Distribution<T>,
 {
     if rand_bool() {
-        check_slice::<T>(limit);
+        check_slice::<T>(limit, local);
     } else {
-        check_iter::<T>(limit);
+        check_iter::<T>(limit, local);
     }
 }
 
-fn check_rand_type(limit: u32) {
-    let switch = thread_rng().gen_range(0u32..12);
+fn check_rand_type(limit: u32, local: &Stack) {
+    let switch = thread_rng().gen_range(0u32..13);
     // Pick some types with varying size/alignment requirements
     match switch {
-        0 => check_rand_method::<u8>(limit),
-        1 => check_rand_method::<u16>(limit),
-        2 => check_rand_method::<u32>(limit),
-        3 => check_rand_method::<(u8, u8)>(limit),
-        4 => check_rand_method::<(u8, u16)>(limit),
-        5 => check_rand_method::<(u8, u32)>(limit),
-        6 => check_rand_method::<(u16, u8)>(limit),
-        7 => check_rand_method::<(u16, u16)>(limit),
-        8 => check_rand_method::<(u16, u32)>(limit),
-        9 => check_rand_method::<(u32, u8)>(limit),
-        10 => check_rand_method::<(u32, u16)>(limit),
-        11 => check_rand_method::<(u32, u32)>(limit),
+        0 => check_rand_method::<u8>(limit, local),
+        1 => check_rand_method::<u16>(limit, local),
+        2 => check_rand_method::<u32>(limit, local),
+        3 => check_rand_method::<(u8, u8)>(limit, local),
+        4 => check_rand_method::<(u8, u16)>(limit, local),
+        5 => check_rand_method::<(u8, u32)>(limit, local),
+        6 => check_rand_method::<(u16, u8)>(limit, local),
+        7 => check_rand_method::<(u16, u16)>(limit, local),
+        8 => check_rand_method::<(u16, u32)>(limit, local),
+        9 => check_rand_method::<(u32, u8)>(limit, local),
+        10 => check_rand_method::<(u32, u16)>(limit, local),
+        11 => check_rand_method::<(u32, u32)>(limit, local),
+        12 => check_rand_method::<()>(limit, local),
         _ => unreachable!(),
     }
 }
 
-fn recurse(limit: u32) {
+fn recurse(limit: u32, local: &Stack) {
     if limit == 0 {
         return;
     }
 
     if thread_rng().gen() {
-        check_rand_type(limit - 1);
+        check_rand_type(limit - 1, local);
     }
     if thread_rng().gen() {
-        check_rand_type(limit - 1);
+        check_rand_type(limit - 1, local);
     }
 }
 
-fn check_iter<T>(limit: u32)
+fn check_iter<T>(limit: u32, local: &Stack)
 where
     T: Debug + PartialEq,
     Standard: Distribution<T>,
@@ -131,26 +140,33 @@ where
         count: 0,
         rand: StdRng::from_seed(seed),
         limit,
+        local,
         drop: &td,
         _marker: PhantomData,
     };
 
     let mut check = CallCheck::new();
-    buffer(iter, |items| {
+    let f = |items: &mut [DropCheck<T>]| {
         check.ok();
         assert_eq!(items.len(), total);
         let mut rand = StdRng::from_seed(seed);
         for item in items {
             assert_eq!(&item.value, &rand.gen());
         }
-        recurse(limit);
-    });
+        recurse(limit, local);
+    };
+    if rand_bool() {
+        buffer(iter, f);
+    } else {
+        local.buffer(iter, f);
+    }
 
     assert_eq!(td.num_dropped_items(), td.num_tracked_items());
 }
 
 struct DropCheck<'a, T> {
     _item: testdrop::Item<'a>,
+    local: &'a Stack,
     limit: u32,
     probability: usize,
     value: T,
@@ -159,7 +175,7 @@ struct DropCheck<'a, T> {
 impl<T> Drop for DropCheck<'_, T> {
     fn drop(&mut self) {
         if thread_rng().gen_range(0..self.probability) == 0 {
-            recurse(self.limit);
+            recurse(self.limit, self.local);
         }
     }
 }
@@ -170,6 +186,7 @@ struct RandIterator<'a, T> {
     rand: StdRng,
     limit: u32,
     drop: &'a TestDrop,
+    local: &'a Stack,
     _marker: PhantomData<*const T>,
 }
 
@@ -185,7 +202,7 @@ where
         let probability = self.total * 2;
 
         if thread_rng().gen_range(0..probability) == 0 {
-            recurse(self.limit);
+            recurse(self.limit, self.local);
         }
 
         self.count += 1;
@@ -196,6 +213,7 @@ where
             value,
             _item: item,
             probability,
+            local: self.local,
             limit: self.limit,
         });
     }
