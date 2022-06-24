@@ -1,11 +1,11 @@
 [package]
 name = "second-stack"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Zac <that3percent@gmail.com>"]
 edition = "2021"
 description = "A fast slice allocator for short-lived allocations."
 homepage = "https://github.com/That3Percent/second-stack"
-docs = "https://docs.rs/second-stack/0.2.1/second_stack/"
+docs = "https://docs.rs/second-stack"
 repository = "https://github.com/That3Percent/second-stack"
 readme = "README.md"
 keywords = ["slice", "stack", "memory-management"]
