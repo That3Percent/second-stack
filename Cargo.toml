@@ -1,6 +1,6 @@
 [package]
 name = "second-stack"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Zac <that3percent@gmail.com>"]
 edition = "2021"
 description = "A fast slice allocator for short-lived allocations."

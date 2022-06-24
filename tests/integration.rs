@@ -13,7 +13,7 @@ use testdrop::TestDrop;
 fn soak() {
     let mut handles = Vec::with_capacity(128);
 
-    for it in 0..10 {
+    for _ in 0..10 {
         for _ in 0..64 {
             let handle = thread::spawn(|| {
                 let local = Stack::new();
