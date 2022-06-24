@@ -11,22 +11,29 @@ use testdrop::TestDrop;
 /// Includes tricky cases like recursing during iteration and drop
 #[test]
 fn soak() {
-    let mut handles = Vec::with_capacity(128);
+    let mut handles = Vec::with_capacity(64);
 
-    for _ in 0..10 {
-        for _ in 0..64 {
-            let handle = thread::spawn(|| {
-                let local = Stack::new();
-                for _ in 0..5 {
-                    recurse(8, &local);
+    for _ in 0..64 {
+        let handle = thread::spawn(|| {
+            for it in 0..500 {
+                if thread_rng().gen_bool(0.002) {
+                    dbg!(it);
                 }
-            });
-            handles.push(handle);
-        }
+                thread::spawn(|| {
+                    let local = Stack::new();
+                    for _ in 0..5 {
+                        recurse(12, &local);
+                    }
+                })
+                .join()
+                .unwrap();
+            }
+        });
+        handles.push(handle);
+    }
 
-        for handle in handles.drain(..) {
-            handle.join().unwrap();
-        }
+    for handle in handles.drain(..) {
+        handle.join().unwrap();
     }
 }
 
@@ -114,16 +121,27 @@ fn check_rand_type(limit: u32, local: &Stack) {
     }
 }
 
-fn recurse(limit: u32, local: &Stack) {
+fn recurse(mut limit: u32, local: &Stack) {
     if limit == 0 {
         return;
     }
 
-    if thread_rng().gen() {
-        check_rand_type(limit - 1, local);
-    }
-    if thread_rng().gen() {
-        check_rand_type(limit - 1, local);
+    limit -= 1;
+
+    let with_local = |limit: u32, local: &Stack| {
+        if thread_rng().gen() {
+            check_rand_type(limit, local);
+        }
+        if thread_rng().gen() {
+            check_rand_type(limit, local);
+        }
+    };
+
+    if thread_rng().gen_range(0..8) == 0 {
+        let new_local = Stack::new();
+        with_local(limit, &new_local);
+    } else {
+        with_local(limit, local);
     }
 }
 
