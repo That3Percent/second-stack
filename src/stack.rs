@@ -1,13 +1,55 @@
-use std::{mem, ptr};
+use std::{
+    mem::{self, align_of, replace, size_of, MaybeUninit},
+    ptr, slice,
+};
+
+use crate::DropStack;
 
 #[derive(Clone)]
-pub struct Stack {
+pub(crate) struct Stack {
     pub base: *mut u8,
     pub len: usize,
     pub capacity: usize,
 }
 
 impl Stack {
+    pub fn get_slice<T>(&mut self, len: usize) -> (DropStack, &mut [MaybeUninit<T>]) {
+        unsafe {
+            // Requires at a minimum size * len, but at a maximum must also pay
+            // an alignment cost.
+            let required_bytes_pessimistic = (align_of::<T>() - 1) + (size_of::<T>() * len);
+            self.ensure_capacity(required_bytes_pessimistic);
+
+            let restore = self.clone();
+            let base = self.base.offset(self.len as isize);
+            let align = base.align_offset(align_of::<T>());
+            let ptr = base.offset(align as isize);
+            self.len += align + (size_of::<T>() * len);
+
+            (
+                DropStack(restore),
+                slice::from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len),
+            )
+        }
+    }
+    fn ensure_capacity(&mut self, capacity: usize) {
+        if self.remaining_bytes() < capacity {
+            // Require at least 64 bytes for the smallest allocation,
+            // and require we at least double in size from the previous
+            // allocated stack
+            let mut new_capacity = 64.max(self.capacity * 2);
+            // Require that we are a power of 2 and can fit
+            // the desired slice.
+            while new_capacity < capacity {
+                new_capacity *= 2;
+            }
+            let mut dealloc = replace(self, Stack::new(new_capacity));
+            // If the previous stack was not borrowed, we need to
+            // free it.
+            dealloc.try_dealloc();
+        }
+    }
+
     pub fn ref_eq(&self, other: &Self) -> bool {
         self.base == other.base
     }
@@ -19,13 +61,16 @@ impl Stack {
         }
     }
 
+    pub fn remaining_bytes(&self) -> usize {
+        self.capacity - self.len
+    }
+
     pub fn new(size_in_bytes: usize) -> Self {
         let mut v = Vec::<u8>::with_capacity(size_in_bytes);
         let base = v.as_mut_ptr();
         mem::forget(v);
 
-        #[cfg(test)]
-        println!("second-stack allocated {size_in_bytes} bytes at {base:?}");
+        // println!("Alloc {size_in_bytes} bytes at {base:?}");
 
         Self {
             base,
@@ -40,12 +85,8 @@ impl Stack {
         }
 
         unsafe {
-            #[cfg(test)]
-            println!(
-                "second-stack deallocated {} bytes at {:?}",
-                self.capacity, self.base,
-            );
-            // Drops the memory
+            // println!("Dealloc {} bytes at {:?}", self.capacity, self.base,);
+            // Deallocates the memory
             drop(Vec::from_raw_parts(self.base, 0, self.capacity));
         }
 

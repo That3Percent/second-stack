@@ -1,16 +1,16 @@
 mod stack;
 use stack::Stack;
-use std::cell::UnsafeCell;
 
-use std::ops::{Deref, DerefMut};
-use std::{self, mem::MaybeUninit};
 use std::{
-    mem::{align_of, replace, size_of},
+    self,
+    cell::UnsafeCell,
+    mem::{size_of, MaybeUninit},
+    ops::{Deref, DerefMut},
     slice,
 };
 
 thread_local!(
-    static THREAD_LOCAL_POOL: Dropper = Dropper(UnsafeCell::new(
+    static THREAD_LOCAL: Dropper = Dropper(UnsafeCell::new(
         Stack::null()
     ))
 );
@@ -22,6 +22,7 @@ impl Drop for Dropper {
         stack.force_dealloc();
     }
 }
+
 impl Deref for Dropper {
     type Target = UnsafeCell<Stack>;
     fn deref(&self) -> &Self::Target {
@@ -68,73 +69,137 @@ where
         return f(&mut slice[..len]);
     }
 
-    // Get a ptr representing the new slice, and the old allocation to
+    // Get the new slice, and the old allocation to
     // restore once the function is finished running.
-    let (restore, ptr) = THREAD_LOCAL_POOL.with(|cell| unsafe {
-        let mut stack = &mut *cell.get();
-        let remaining_bytes = stack.capacity - stack.len;
-        // Requires at a minimum size * len, but at a maximum must also pay
-        // an alignment cost.
-        let required_bytes_pessimistic = (align_of::<T>() - 1) + (size_of::<T>() * len);
-        if remaining_bytes < required_bytes_pessimistic {
-            // Require at least 64 bytes for the smallest allocation,
-            // and require we at least double in size from the previous
-            // allocated stack
-            let mut capacity = 64.max(stack.capacity * 2);
-            // Require that we are a power of 2 and can fit
-            // the desired slice.
-            while capacity < required_bytes_pessimistic {
-                capacity *= 2;
-            }
-            let mut dealloc = replace(stack, Stack::new(capacity));
-            // If the previous stack was not borrowed, we need to
-            // free it.
-            dealloc.try_dealloc();
-        }
-
-        let restore = stack.clone();
-
-        let base = stack.base.offset(stack.len as isize);
-        let align = base.align_offset(align_of::<T>());
-        let ptr = base.offset(align as isize);
-        stack.len += align + (size_of::<T>() * len);
-
-        (restore, ptr)
+    let (_restore, slice) = THREAD_LOCAL.with(|cell| unsafe {
+        let stack = &mut *cell.get();
+        stack.get_slice(len)
     });
-    let _restore = DropStack(restore);
 
-    let slice = unsafe { slice::from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len) };
-    let result = f(slice);
-    drop(slice);
+    f(slice)
+}
 
-    // The logic to drop our Stack goes into a drop impl so that if f() panics,
-    // the drop logic is still run and we don't leak any memory.
-    struct DropStack(Stack);
-    impl Drop for DropStack {
+/// Buffers an iterator to a slice and gives temporary access to that slice.
+/// Panics when running out of memory if the iterator is unbounded.
+pub fn buffer<T, F, R, I>(i: I, f: F) -> R
+where
+    I: Iterator<Item = T>,
+    F: FnOnce(&mut [T]) -> R,
+{
+    // Special case for ZST
+    if size_of::<T>() == 0 {
+        let mut v = Vec::new();
+        for item in i {
+            v.push(item);
+        }
+        return f(&mut v);
+    }
+
+    // Data goes in a struct in case user code panics.
+    // User code includes Iterator::next, FnOnce, and Drop::drop
+    struct Writer<'a, T> {
+        restore: Option<DropStack>,
+        reserved: &'a mut [MaybeUninit<T>],
+        written: usize,
+    }
+
+    impl<T> Writer<'_, T> {
+        fn write(&mut self, item: T) {
+            self.reserved[self.written] = MaybeUninit::new(item);
+            self.written += 1;
+        }
+        fn inits(&mut self) -> &mut [MaybeUninit<T>] {
+            &mut self.reserved[..self.written]
+        }
+    }
+
+    impl<T> Drop for Writer<'_, T> {
         fn drop(&mut self) {
             unsafe {
-                // TODO: Would be nice to use the nightly feature with_borrow_mut
-                THREAD_LOCAL_POOL.with(|cell| {
-                    let mut current = &mut *cell.get();
-                    if current.ref_eq(&self.0) {
-                        current.len = self.0.len;
-                    } else {
-                        self.0.try_dealloc();
-                    }
-                });
+                for init in self.inits() {
+                    init.assume_init_drop();
+                }
             }
         }
     }
 
-    result
+    unsafe {
+        let mut on_stack: [MaybeUninit<T>; 32] = uninit_array();
+        let mut writer = Writer {
+            restore: None,
+            reserved: &mut on_stack,
+            written: 0,
+        };
+
+        for next in i {
+            if writer.written == writer.reserved.len() {
+                THREAD_LOCAL.with(|cell| {
+                    let stack = &mut *cell.get();
+
+                    // First try to use the same stack
+                    if let Some(prev) = &writer.restore {
+                        if prev.0.base == stack.base {
+                            // If we are already are using this stack, we know the
+                            // end ptr is already aligned. To double in size,
+                            // we would need as many bytes as there are currently
+                            // and do not need to align
+                            let required_bytes = size_of::<T>() * writer.reserved.len();
+
+                            if stack.remaining_bytes() >= required_bytes {
+                                stack.len += required_bytes;
+
+                                writer.reserved = slice::from_raw_parts_mut(
+                                    writer.reserved.as_mut_ptr() as *mut MaybeUninit<T>,
+                                    writer.written * 2,
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    let (restore, slice) = stack.get_slice(writer.written * 2);
+
+                    for i in 0..writer.written {
+                        slice[i].write(writer.reserved[i].assume_init_read());
+                    }
+                    // This attempts to restore the old allocation when
+                    // writer.restore is Some, but we know that there
+                    // is a new allocation at this point, so it may just
+                    // free memory.
+                    writer.restore = Some(restore);
+                    writer.reserved = slice;
+                });
+            }
+            writer.write(next);
+        }
+
+        // TODO: (Performance?) Drop reserve of unused stack, if any. We have over-allocated.
+        // TODO: (Performance?) Consider using size_hint
+
+        let inits = writer.inits();
+
+        // This is copied from slice_assume_init_mut, which is
+        // currently an unstable API
+        let buffer = &mut *(inits as *mut [MaybeUninit<T>] as *mut [T]);
+
+        f(buffer)
+    }
 }
 
-/*
-pub fn iterator<T, F, R, I>(i: I, f: F) -> R
-where
-    I: Iterator<Item = T>,
-    F: FnOnce(&[T]) -> R,
-{
-    todo!()
+// The logic to drop our Stack goes into a drop impl so that if there
+// is a panic the drop logic is still run and we don't leak any memory.
+pub(crate) struct DropStack(Stack);
+impl Drop for DropStack {
+    fn drop(&mut self) {
+        unsafe {
+            THREAD_LOCAL.with(|cell| {
+                let mut current = &mut *cell.get();
+                if current.ref_eq(&self.0) {
+                    current.len = self.0.len;
+                } else {
+                    self.0.try_dealloc();
+                }
+            });
+        }
+    }
 }
-*/
