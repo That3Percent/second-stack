@@ -88,10 +88,7 @@ where
 {
     // Special case for ZST
     if size_of::<T>() == 0 {
-        let mut v = Vec::new();
-        for item in i {
-            v.push(item);
-        }
+        let mut v: Vec<_> = i.collect();
         return f(&mut v);
     }
 
