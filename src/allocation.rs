@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     mem::{self, align_of, replace, size_of, MaybeUninit},
     ptr, slice,
 };
@@ -13,7 +14,11 @@ pub(crate) struct Allocation {
 }
 
 impl Allocation {
-    pub fn get_slice<T>(&mut self, len: usize) -> (DropStack, &mut [MaybeUninit<T>]) {
+    pub fn get_slice<'a, T>(
+        &mut self,
+        parent: &'a UnsafeCell<Allocation>,
+        len: usize,
+    ) -> (DropStack<'a>, &mut [MaybeUninit<T>]) {
         unsafe {
             // Requires at a minimum size * len, but at a maximum must also pay
             // an alignment cost.
@@ -27,7 +32,10 @@ impl Allocation {
             self.len += align + (size_of::<T>() * len);
 
             (
-                DropStack(restore),
+                DropStack {
+                    restore,
+                    location: parent,
+                },
                 slice::from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len),
             )
         }
