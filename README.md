@@ -1,7 +1,7 @@
 The thread's stack is a high performance way to manage memory. But, it cannot be used for large or dynamically sized allocations. What if the thread had a second stack suitable for that purpose?
 
 > We've had one, yes. What about second stack?
->   - Pippin, probably.
+> ...Pippin, probably.
 
 `second-stack` is an allocator for short-lived, potentially large values and slices. It is often faster to use than `Vec` for the same reason using the thread's stack is faster than using the heap most of the time.
 
@@ -14,7 +14,9 @@ There are two ways to use this API. The preferred way is to use methods which de
 
 Example using `buffer`:
 ```rust
-// Buffer takes any iterator, writes it to a slice on the second stack, and gives you mutable access to the slice.
+// Buffer takes any iterator,
+// writes it to a slice on the second stack,
+// and gives you mutable access to the slice.
 buffer(0..1000, |items| {
     assert_eq!(items.len(), 1000);
     assert_eq!(items[19], 19);
