@@ -41,6 +41,17 @@ impl Stack {
         Self(UnsafeCell::new(Allocation::null()))
     }
 
+    // Place a potentially very large value on this stack.
+    pub fn uninit<T, R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut MaybeUninit<T>) -> R,
+    {
+        // Delegate implementation to uninit_slice just to get this working.
+        // Performance could be slightly improved with a bespoke implementation
+        // of this method.
+        self.uninit_slice(1, |slice| f(&mut slice[0]))
+    }
+
     /// Allocates an uninit slice from this stack.
     pub fn uninit_slice<T, F, R>(&self, len: usize, f: F) -> R
     where
@@ -60,13 +71,10 @@ impl Stack {
             return f(&mut slice);
         }
 
-        // Optimization for small slices. This is currently required for correctness
+        // Required for correctness
         // See also: 26936c11-5b7c-472e-8f63-7922e63a5425
-        // TODO: It would be nice to also check that T is small, but since this
-        // is required for correctness we cannot presently do that.
-        if len <= 32 {
-            let mut slice: [MaybeUninit<T>; 32] = uninit_array();
-            return f(&mut slice[..len]);
+        if len == 0 {
+            return f(&mut []);
         }
 
         // Get the new slice, and the old allocation to
@@ -146,7 +154,7 @@ impl Stack {
         }
 
         unsafe {
-            let mut on_stack: [MaybeUninit<T>; 32] = uninit_array();
+            let mut on_stack: [MaybeUninit<T>; 0] = uninit_array();
             let mut writer = Writer {
                 restore: None,
                 reserved: &mut on_stack,
@@ -162,7 +170,8 @@ impl Stack {
                     if !writer.try_reuse(stack) {
                         // This will always be a different allocation, otherwise
                         // try_reuse would have succeeded
-                        let (restore, slice) = stack.get_slice(&self.0, writer.written * 2);
+                        let (restore, slice) =
+                            stack.get_slice(&self.0, (writer.written * 2).max(1));
 
                         for i in 0..writer.written {
                             slice[i].write(writer.reserved[i].assume_init_read());
@@ -198,6 +207,14 @@ where
     F: FnOnce(&mut [MaybeUninit<T>]) -> R,
 {
     THREAD_LOCAL.with(|stack| stack.uninit_slice(len, f))
+}
+
+// Place a potentially very large value on the threadlocal second stack.
+pub fn uninit<T, F, R>(f: F) -> R
+where
+    F: FnOnce(&mut MaybeUninit<T>) -> R,
+{
+    THREAD_LOCAL.with(|stack| stack.uninit(f))
 }
 
 /// Buffers an iterator to a slice on the threadlocal stack and gives temporary access to that slice.

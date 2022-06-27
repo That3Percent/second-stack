@@ -45,6 +45,39 @@ fn get_seed() -> <StdRng as SeedableRng>::Seed {
     thread_rng().gen()
 }
 
+fn check_value<T>(limit: u32, local: &Stack)
+where
+    T: PartialEq + Debug,
+    Standard: Distribution<T>,
+{
+    let mut call_check = CallCheck::new();
+
+    struct Huge<T> {
+        _a: [T; 65536],
+        _b: [(T, T); 65536],
+        _c: [(T, T, T); 65536],
+        _d: [(T, T, T, T); 65536],
+    }
+
+    // If T is u8, this value would use almost 1/3 of the 2MiB thread stack
+    // When recursing and using other types we virtually guarantee a stackoverflow
+    // if this value was allocated on the thread's stack. Some other types
+    // already use more than the limit with a single allocation.
+    let f = move |_uninit: &mut MaybeUninit<Huge<T>>| {
+        call_check.ok();
+        // TODO: Do an overwrite check here.
+        // Even zeroing this out is very expensive.
+        // *_uninit = MaybeUninit::zeroed();
+        recurse(limit, local);
+    };
+
+    if rand_bool() {
+        uninit(f);
+    } else {
+        local.uninit(f)
+    }
+}
+
 /// Grabs a randomly sized slice, verifies it's len, writes
 /// random values to it, calls external function,
 /// and verifies that all of the writes remained intact.
@@ -93,10 +126,12 @@ where
     T: Debug + PartialEq,
     Standard: Distribution<T>,
 {
-    if rand_bool() {
-        check_slice::<T>(limit, local);
-    } else {
-        check_iter::<T>(limit, local);
+    let switch = thread_rng().gen_range(0u32..3);
+    match switch {
+        0 => check_slice::<T>(limit, local),
+        1 => check_iter::<T>(limit, local),
+        2 => check_value::<T>(limit, local),
+        _ => unreachable!(),
     }
 }
 
