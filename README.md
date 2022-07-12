@@ -43,7 +43,7 @@ stack.buffer(std::iter::repeat(5).take(100), |slice| {
 ```
 
 Example placing a huge value:
-```
+```rust
 struct Huge {
     bytes: [u8; 4194304]
 }
