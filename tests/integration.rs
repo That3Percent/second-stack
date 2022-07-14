@@ -11,18 +11,51 @@ use testdrop::TestDrop;
 /// Includes tricky cases like recursing during iteration and drop
 #[test]
 fn soak() {
-    let mut handles = Vec::with_capacity(64);
+    #[derive(Copy, Clone, Debug)]
+    struct Cfg {
+        threads: usize,
+        inner_loops: usize,
+        outer_loops: usize,
+        recursion: u32,
+    }
 
-    for _ in 0..64 {
-        let handle = thread::spawn(|| {
-            for it in 0..500 {
-                if thread_rng().gen_bool(0.002) {
+    let cfg = if cfg!(miri) {
+        Cfg {
+            threads: 1,
+            inner_loops: 2,
+            outer_loops: 8,
+            recursion: 4,
+        }
+    } else if cfg!(debug_assertions) {
+        Cfg {
+            threads: 32,
+            inner_loops: 3,
+            outer_loops: 100,
+            recursion: 8,
+        }
+    } else {
+        Cfg {
+            threads: 64,
+            inner_loops: 5,
+            outer_loops: 500,
+            recursion: 12,
+        }
+    };
+
+    dbg!(&cfg);
+
+    let mut handles = Vec::with_capacity(cfg.threads);
+
+    for _ in 0..cfg.threads {
+        let handle = thread::spawn(move || {
+            for it in 0..cfg.outer_loops {
+                if thread_rng().gen_bool(1.0 / (cfg.threads * cfg.inner_loops) as f64) {
                     dbg!(it);
                 }
-                thread::spawn(|| {
+                thread::spawn(move || {
                     let local = Stack::new();
-                    for _ in 0..5 {
-                        recurse(12, &local);
+                    for _ in 0..cfg.inner_loops {
+                        recurse(cfg.recursion, &local);
                     }
                 })
                 .join()
@@ -37,12 +70,9 @@ fn soak() {
     }
 }
 
-// This had to be separated out into a method because of this bizare
-// compilation error:
-// https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=0701319e1202978381ccba57e443a8b4
-// Apparently what's going on here is that constrants shadow blanket impls.
-fn get_seed() -> <StdRng as SeedableRng>::Seed {
-    thread_rng().gen()
+fn rng_pair() -> (StdRng, StdRng) {
+    let seed = thread_rng().gen();
+    (StdRng::from_seed(seed), StdRng::from_seed(seed))
 }
 
 fn check_value<T>(limit: u32, local: &Stack)
@@ -52,22 +82,30 @@ where
 {
     let mut call_check = CallCheck::new();
 
+    #[cfg(not(miri))]
+    const LEN: usize = 65536;
+    #[cfg(miri)]
+    const LEN: usize = 1024;
+
     struct Huge<T> {
-        _a: [T; 65536],
-        _b: [(T, T); 65536],
-        _c: [(T, T, T); 65536],
-        _d: [(T, T, T, T); 65536],
+        _a: [T; LEN],
+        _b: [(T, T); LEN],
+        _c: [(T, T, T); LEN],
+        _d: [(T, T, T, T); LEN],
     }
 
     // If T is u8, this value would use almost 1/3 of the 2MiB thread stack
     // When recursing and using other types we virtually guarantee a stackoverflow
     // if this value was allocated on the thread's stack. Some other types
     // already use more than the limit with a single allocation.
-    let f = move |_uninit: &mut MaybeUninit<Huge<T>>| {
+    let f = move |_huge: &mut MaybeUninit<Huge<T>>| {
         call_check.ok();
+
         // TODO: Do an overwrite check here.
         // Even zeroing this out is very expensive.
         // *_uninit = MaybeUninit::zeroed();
+        // Unfortunately, it is hard to do a sampling for verification as
+        // well.
         recurse(limit, local);
     };
 
@@ -92,20 +130,18 @@ where
 
     let f = move |uninit: &mut [MaybeUninit<T>]| {
         call_check.ok();
-        let seed = get_seed();
-        let mut rng = StdRng::from_seed(seed);
+        let (mut rng_gen, mut rng_check) = rng_pair();
 
         assert_eq!(len, uninit.len());
         for i in 0..uninit.len() {
-            let value = rng.gen();
+            let value = rng_gen.gen();
             uninit[i] = MaybeUninit::new(value);
         }
         recurse(limit, local);
         let init = unsafe { &*(uninit as *const [MaybeUninit<T>] as *const [T]) };
         // Verify that nothing overwrote this array.
-        let mut rng = StdRng::from_seed(seed);
         for i in 0..init.len() {
-            let value = rng.gen();
+            let value = rng_check.gen();
             assert_eq!(init[i], value);
         }
     };
@@ -185,13 +221,13 @@ where
     T: Debug + PartialEq,
     Standard: Distribution<T>,
 {
-    let seed = get_seed();
+    let (rng_gen, mut rng_check) = rng_pair();
     let total = thread_rng().gen_range(0..1025);
     let td = TestDrop::new();
     let iter: RandIterator<T> = RandIterator {
         total,
         count: 0,
-        rand: StdRng::from_seed(seed),
+        rand: rng_gen,
         limit,
         local,
         drop: &td,
@@ -202,9 +238,8 @@ where
     let f = |items: &mut [DropCheck<T>]| {
         check.ok();
         assert_eq!(items.len(), total);
-        let mut rand = StdRng::from_seed(seed);
         for item in items {
-            assert_eq!(&item.value, &rand.gen());
+            assert_eq!(&item.value, &rng_check.gen());
         }
         recurse(limit, local);
     };
