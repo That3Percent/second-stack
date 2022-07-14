@@ -26,8 +26,8 @@ buffer(0..1000, |items| {
 
 Example using `uninit_slice`:
 ```rust
-uninit_slice(|slice| {
-    // Write to the slice here
+uninit_slice(100, |slice| {
+    // Write to the 100 element slice here
 })
 ```
 
