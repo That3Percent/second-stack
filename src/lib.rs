@@ -5,7 +5,7 @@ use std::{
     self,
     cell::UnsafeCell,
     mem::{size_of, MaybeUninit},
-    slice,
+    ptr, slice,
 };
 
 thread_local!(
@@ -26,14 +26,10 @@ impl Drop for Stack {
         // because we know the allocation cannot be in-use. By eliding
         // the check, this allows the allocation to be freed when there
         // was a panic
-        stack.force_dealloc();
+        unsafe {
+            stack.force_dealloc();
+        }
     }
-}
-
-// Copied from the nightly feature MaybeUninit::assume_init
-const fn uninit_array<const N: usize, T>() -> [MaybeUninit<T>; N] {
-    // SAFETY: An uninitialized `[MaybeUninit<_>; LEN]` is valid.
-    unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() }
 }
 
 impl Stack {
@@ -65,10 +61,11 @@ impl Stack {
         // See also: 2ec61cda-e074-4b26-a9a5-a01b70706585
         // There may be other issues also.
         if std::mem::size_of::<T>() == 0 {
-            let mut tmp = Vec::<MaybeUninit<T>>::with_capacity(len);
-            let tmp = tmp.as_mut_ptr();
-            let mut slice = unsafe { slice::from_raw_parts_mut(tmp, len) };
-            return f(&mut slice);
+            let mut tmp = Vec::<T>::with_capacity(len);
+            // We do need to take a slice here, because suprisingly
+            // tmp.capacity() returns 18446744073709551615
+            let slice = &mut tmp.spare_capacity_mut()[..len];
+            return f(slice);
         }
 
         // Required for correctness
@@ -79,10 +76,12 @@ impl Stack {
 
         // Get the new slice, and the old allocation to
         // restore once the function is finished running.
-        let (_restore, slice) = unsafe {
+        let (_restore, (ptr, len)) = unsafe {
             let stack = &mut *self.0.get();
             stack.get_slice(&self.0, len)
         };
+
+        let slice = unsafe { slice::from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len) };
 
         f(slice)
     }
@@ -104,38 +103,30 @@ impl Stack {
         // User code includes Iterator::next, FnOnce, and Drop::drop
         struct Writer<'a, T> {
             restore: Option<DropStack<'a>>,
-            reserved: &'a mut [MaybeUninit<T>],
-            written: usize,
+            base: *mut T,
+            len: usize,
+            capacity: usize,
         }
 
         impl<T> Writer<'_, T> {
-            fn write(&mut self, item: T) {
-                self.reserved[self.written] = MaybeUninit::new(item);
-                self.written += 1;
-            }
-            fn inits(&mut self) -> &mut [MaybeUninit<T>] {
-                &mut self.reserved[..self.written]
+            unsafe fn write(&mut self, item: T) {
+                self.base.add(self.len).write(item);
+                self.len += 1;
             }
 
             fn try_reuse(&mut self, stack: &mut Allocation) -> bool {
-                unsafe {
-                    if let Some(prev) = &self.restore {
-                        if prev.restore.ref_eq(stack) {
-                            // If we are already are using this stack, we know the
-                            // end ptr is already aligned. To double in size,
-                            // we would need as many bytes as there are currently
-                            // and do not need to align
-                            let required_bytes = size_of::<T>() * self.reserved.len();
+                if let Some(prev) = &self.restore {
+                    if prev.restore.ref_eq(stack) {
+                        // If we are already are using this stack, we know the
+                        // end ptr is already aligned. To double in size,
+                        // we would need as many bytes as there are currently
+                        // and do not need to align
+                        let required_bytes = size_of::<T>() * self.capacity;
 
-                            if stack.remaining_bytes() >= required_bytes {
-                                stack.len += required_bytes;
-
-                                self.reserved = slice::from_raw_parts_mut(
-                                    self.reserved.as_mut_ptr() as *mut MaybeUninit<T>,
-                                    self.written * 2,
-                                );
-                                return true;
-                            }
+                        if stack.remaining_bytes() >= required_bytes {
+                            stack.len += required_bytes;
+                            self.capacity *= 2;
+                            return true;
                         }
                     }
                 }
@@ -146,23 +137,23 @@ impl Stack {
         impl<T> Drop for Writer<'_, T> {
             fn drop(&mut self) {
                 unsafe {
-                    for init in self.inits() {
-                        init.assume_init_drop();
+                    for i in 0..self.len {
+                        self.base.add(i).drop_in_place()
                     }
                 }
             }
         }
 
         unsafe {
-            let mut on_stack: [MaybeUninit<T>; 0] = uninit_array();
             let mut writer = Writer {
                 restore: None,
-                reserved: &mut on_stack,
-                written: 0,
+                base: ptr::null_mut(),
+                capacity: 0,
+                len: 0,
             };
 
             for next in i {
-                if writer.written == writer.reserved.len() {
+                if writer.capacity == writer.len {
                     let stack = &mut *self.0.get();
 
                     // First try to use the same stack, but if that fails
@@ -170,18 +161,22 @@ impl Stack {
                     if !writer.try_reuse(stack) {
                         // This will always be a different allocation, otherwise
                         // try_reuse would have succeeded
-                        let (restore, slice) =
-                            stack.get_slice(&self.0, (writer.written * 2).max(1));
+                        let (restore, (base, capacity)) =
+                            stack.get_slice(&self.0, (writer.len * 2).max(1));
 
-                        for i in 0..writer.written {
-                            slice[i].write(writer.reserved[i].assume_init_read());
+                        // Check for 0 is to avoid copy from null ptr (miri violation)
+                        if writer.len != 0 {
+                            ptr::copy_nonoverlapping(writer.base, base, writer.len);
                         }
+
                         // This attempts to restore the old allocation when
                         // writer.restore is Some, but we know that there
                         // is a new allocation at this point, so the only
                         // thing it can do is free memory
                         writer.restore = Some(restore);
-                        writer.reserved = slice;
+
+                        writer.capacity = capacity;
+                        writer.base = base;
                     }
                 }
                 writer.write(next);
@@ -190,12 +185,7 @@ impl Stack {
             // TODO: (Performance?) Drop reserve of unused stack, if any. We have over-allocated.
             // TODO: (Performance?) Consider using size_hint
 
-            let inits = writer.inits();
-
-            // This is copied from slice_assume_init_mut, which is
-            // currently an unstable API
-            let buffer = &mut *(inits as *mut [MaybeUninit<T>] as *mut [T]);
-
+            let buffer = slice::from_raw_parts_mut(writer.base, writer.len);
             f(buffer)
         }
     }

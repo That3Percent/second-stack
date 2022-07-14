@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
-    mem::{self, align_of, replace, size_of, MaybeUninit},
-    ptr, slice,
+    mem::{self, align_of, replace, size_of},
+    ptr,
 };
 
 use crate::DropStack;
@@ -18,7 +18,7 @@ impl Allocation {
         &mut self,
         parent: &'a UnsafeCell<Allocation>,
         len: usize,
-    ) -> (DropStack<'a>, &mut [MaybeUninit<T>]) {
+    ) -> (DropStack<'a>, (*mut T, usize)) {
         unsafe {
             // Requires at a minimum size * len, but at a maximum must also pay
             // an alignment cost.
@@ -36,7 +36,7 @@ impl Allocation {
                     restore,
                     location: parent,
                 },
-                slice::from_raw_parts_mut(ptr as *mut MaybeUninit<T>, len),
+                (ptr as *mut T, len),
             )
         }
     }
@@ -87,16 +87,14 @@ impl Allocation {
         }
     }
 
-    pub fn force_dealloc(&mut self) {
+    pub unsafe fn force_dealloc(&mut self) {
         if self.base == ptr::null_mut() {
             return;
         }
 
-        unsafe {
-            // println!("Dealloc {} bytes at {:?}", self.capacity, self.base,);
-            // Deallocates the memory
-            drop(Vec::from_raw_parts(self.base, 0, self.capacity));
-        }
+        // println!("Dealloc {} bytes at {:?}", self.capacity, self.base,);
+        // Deallocates the memory
+        drop(Vec::from_raw_parts(self.base, 0, self.capacity));
 
         self.base = ptr::null_mut();
     }
@@ -111,6 +109,6 @@ impl Allocation {
             return;
         }
 
-        self.force_dealloc();
+        unsafe { self.force_dealloc() }
     }
 }
