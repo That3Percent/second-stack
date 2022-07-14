@@ -37,7 +37,7 @@ impl Stack {
         Self(UnsafeCell::new(Allocation::null()))
     }
 
-    // Place a potentially very large value on this stack.
+    /// Place a potentially very large value on this stack.
     pub fn uninit<T, R, F>(&self, f: F) -> R
     where
         F: FnOnce(&mut MaybeUninit<T>) -> R,
@@ -199,7 +199,7 @@ where
     THREAD_LOCAL.with(|stack| stack.uninit_slice(len, f))
 }
 
-// Place a potentially very large value on the threadlocal second stack.
+/// Place a potentially very large value on the threadlocal second stack.
 pub fn uninit<T, F, R>(f: F) -> R
 where
     F: FnOnce(&mut MaybeUninit<T>) -> R,
